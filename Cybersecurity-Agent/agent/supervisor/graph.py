@@ -1,5 +1,6 @@
 import logging
 from typing import TypedDict, Annotated, List, Optional
+import inspect
 
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
@@ -45,6 +46,10 @@ AGENT_REGISTRY = {
     "dependency": run_dependency_agent,
     "vulnerability": run_vulnerability_agent,
     "advisory": run_advisory_agent,
+    "direct_answer": lambda messages, tools: {
+        "output": "I could not determine the correct agent to handle this request.",
+        "tool_calls": [],
+    },
 }
 
 # =========================================================
@@ -86,7 +91,7 @@ HARD RULES (strict priority):
 
 Ignore history if a HARD RULE matches.
 
-If none match → agent = null
+If none match → agent = direct_answer
 
 SOFT RULES:
 
@@ -144,7 +149,8 @@ async def resolve_tools(scope: str):
 # =========================================================
 
 async def agent_executor_node(state: SupervisorState) -> SupervisorState:
-    agent_name = state.get("selected_agent")
+    # Ensure agent_name is always a string (fallback to empty string)
+    agent_name = state.get("selected_agent") or ""
 
     handler = AGENT_REGISTRY.get(agent_name)
     scope = AGENT_TOOL_SCOPE.get(agent_name, "all")
@@ -157,13 +163,34 @@ async def agent_executor_node(state: SupervisorState) -> SupervisorState:
 
     tools = await resolve_tools(scope)
 
-    result = await handler(state["messages"], tools)
+    # Support both async handlers (coroutine functions) and sync handlers.
+    result = handler(state["messages"], tools)
+    if inspect.isawaitable(result):
+        result = await result
+
+    # Normalize result to a dict-like object with expected keys.
+    if not isinstance(result, dict):
+        # If a handler returns a plain string or other scalar, treat it as output.
+        result = {"output": str(result), "tool_calls": []}
+
+    output = result.get("output", "")
+    # Coerce output to string (could be list/other from buggy handlers)
+    if not isinstance(output, str):
+        output = str(output)
+
+    tool_calls = result.get("tool_calls", []) or []
+    if not isinstance(tool_calls, list):
+        tool_calls = [tool_calls]
+
+    artifact = result.get("artifact", {}) or {}
+    if not isinstance(artifact, dict):
+        artifact = {"value": artifact}
 
     return {
-        "output": result.get("output", ""),
-        "tool_calls": result.get("tool_calls", []),
-        "artifact": result.get("artifact", {}),
-        "selected_agent": agent_name,
+        "output": output,
+        "tool_calls": tool_calls,
+        "artifact": artifact,
+        "selected_agent": str(agent_name),
     }
 
 
@@ -254,8 +281,19 @@ async def run_supervisor(user_message: str, session_id: str, graph):
 
     session_store.save_session_history(session_id, history_data)
 
+    # Coerce selected_agent to a safe string (empty string if None). This
+    # prevents None from being returned to the API which expects a string.
+    agent_val = final.get("selected_agent")
+    if agent_val is None:
+        agent_used = ""
+    elif isinstance(agent_val, str):
+        agent_used = agent_val
+    else:
+        # Fall back to a stable string representation for unexpected types
+        agent_used = str(agent_val)
+
     return {
         "output": final.get("output", ""),
-        "agent_used": final.get("selected_agent", ""),
+        "agent_used": agent_used,
         "tool_calls": final.get("tool_calls", []),
     }
