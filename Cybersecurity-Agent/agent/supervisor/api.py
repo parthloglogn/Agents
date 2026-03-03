@@ -1,10 +1,11 @@
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, Response
 import json
 
 from .graph import build_supervisor_graph, run_supervisor
 from .mcp_client import get_mcp_tools, get_all_mcp_tools
 from shared.models import ChatRequest, ChatResponse, generate_session_id, RedisSessionStore
+from .report import generate_session_report_pdf
 
 
 app = FastAPI(title="Supervisor API")
@@ -73,3 +74,24 @@ async def get_chat_history(session_id: str):
     session_store = RedisSessionStore()
     history = session_store.get_session_history(session_id)
     return {"history": history}
+
+
+@app.get("/chat/report/{session_id}")
+async def download_session_report(session_id: str):
+    """Return a PDF report for the session (history + artifacts)."""
+    session_store = RedisSessionStore()
+    history = session_store.get_session_history(session_id)
+    artifacts = session_store.get_session_artifacts(session_id)
+
+    if not history and not artifacts:
+        raise HTTPException(status_code=404, detail="Session not found or no data available")
+
+    try:
+        pdf_bytes = generate_session_report_pdf(session_id, history, artifacts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {e}")
+
+    headers = {
+        "Content-Disposition": f"attachment; filename=session_report_{session_id}.pdf"
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

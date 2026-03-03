@@ -6,7 +6,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from typing import Any
-
+import yaml
 import httpx
 
 logger = logging.getLogger("dependency-mcp")
@@ -94,6 +94,54 @@ def _parse_pom_xml(content: str) -> list[dict]:
     return deps
 
 
+def _parse_build_gradle(content: str) -> list[dict]:
+    deps = []
+
+    pattern = re.compile(
+        r"(implementation|api|compile|classpath)\s*\(?['\"]([^:'\"]+):([^:'\"]+):([^'\"]+)['\"]\)?"
+    )
+
+    for match in pattern.finditer(content or ""):
+        group = match.group(2)
+        artifact = match.group(3)
+        version = match.group(4)
+
+        deps.append({
+            "name": f"{group}:{artifact}",
+            "group": group,
+            "artifact": artifact,
+            "version": version,
+            "pinned": True,
+            "ecosystem": "Maven",  # OSV uses Maven ecosystem for Gradle Java deps
+        })
+
+    return deps
+
+
+def _parse_pubspec_yaml(content: str) -> list[dict]:
+    deps = []
+
+    try:
+        data = yaml.safe_load(content or "")
+    except Exception:
+        return deps
+
+    dependencies = data.get("dependencies", {}) or {}
+
+    for name, version in dependencies.items():
+        if isinstance(version, dict):
+            continue  # skip path/git dependencies
+
+        cleaned = str(version).strip().lstrip("^~>=< ")
+
+        deps.append({
+            "name": name,
+            "version": cleaned if cleaned else None,
+            "pinned": not str(version).startswith(("^", "~")),
+            "ecosystem": "Pub",  # OSV ecosystem for Dart
+        })
+
+    return deps
 # =========================================================
 # OSV Query
 # =========================================================
@@ -123,6 +171,10 @@ async def scan_dependencies_from_text(content: str, file_type: str) -> dict:
         deps = _parse_package_json(content)
     elif ft == "pom.xml":
         deps = _parse_pom_xml(content)
+    elif ft == "build.gradle":
+        deps = _parse_build_gradle(content)
+    elif ft == "pubspec.yaml":
+        deps = _parse_pubspec_yaml(content)
     else:
         return _failure("Unsupported file_type")
 
@@ -182,7 +234,13 @@ async def scan_public_github_repo(repo_url: str) -> dict:
 
     async with httpx.AsyncClient(timeout=20) as client:
         for branch in ["main", "master"]:
-            for filename in ["requirements.txt", "package.json", "pom.xml"]:
+            for filename in [
+                "requirements.txt",
+                "package.json",
+                "pom.xml",
+                "build.gradle",
+                "pubspec.yaml",
+            ]:
                 raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
                 try:
                     r = await client.get(raw_url)

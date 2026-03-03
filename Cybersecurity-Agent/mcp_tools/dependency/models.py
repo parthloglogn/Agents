@@ -15,5 +15,5 @@ class TextDependencyScanRequest(BaseModel):
     )
     file_type: str = Field(
         ...,
-        description="requirements.txt | package.json | pom.xml",
+        description="requirements.txt | package.json | pom.xml | build.gradle | pubspec.yaml",
     )
