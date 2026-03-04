@@ -2,7 +2,7 @@ import streamlit as st
 
 
 QUICK_ACTIONS = [
-    "Scan dependencies for",
+    "Scan dependencies for https://github.com/Log-LogN/ask-db",
     "Explain GHSA-j288-q9x7-2f5v",
     "Check vulnerabilities for next@15.0.8",
 ]
